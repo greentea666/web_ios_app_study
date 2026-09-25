@@ -7,6 +7,7 @@
     "dev": "pnpm --parallel --filter @bookwise/api --filter @bookwise/web dev",
     "dev:web": "pnpm --filter @bookwise/web dev",
     "dev:api": "pnpm --filter @bookwise/api dev",
+    "test": "pnpm --filter @bookwise/api test",
     "build": "pnpm --filter @bookwise/shared --filter @bookwise/api --filter @bookwise/web build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"

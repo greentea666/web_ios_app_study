@@ -12,7 +12,7 @@ packages/shared  共用資料型別與輸入 schema
 prisma/       PostgreSQL 多租戶資料模型
 ```
 
-目前 API 預設使用記憶體資料，讓新環境可以立即展示；`prisma/schema.prisma` 已定義 Workspace、User、Appointment，下一步可將 repository 接到 PostgreSQL。
+目前 API 預設使用記憶體資料，讓新環境可以立即展示；`prisma/schema.prisma` 已定義 Workspace、User、Appointment，下一步可將 repository 接到 PostgreSQL。重啟 API 會重置示範資料。
 
 ## 快速開始
 
@@ -49,6 +49,7 @@ Expo 啟動後可用 Expo Go 掃描 QR Code，或使用 `a` 開啟 Android Emula
 ```bash
 pnpm typecheck
 pnpm build
+pnpm test
 ```
 
 ## API v1
@@ -59,6 +60,8 @@ pnpm build
 | GET | `/api/v1/dashboard` | 工作區儀表板 |
 | GET | `/api/v1/appointments` | 預約列表 |
 | POST | `/api/v1/appointments` | 建立預約，使用 Zod 驗證 |
+| PATCH | `/api/v1/appointments/:id` | 切換預約狀態 |
+| DELETE | `/api/v1/appointments/:id` | 刪除預約 |
 
 所有商業資料應帶 `workspaceId`，正式環境再加入 JWT／session middleware、RBAC、rate limit、audit log 與 payment webhook。
 
