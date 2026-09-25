@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bookwise
+      POSTGRES_PASSWORD: bookwise
+      POSTGRES_DB: bookwise
+    ports:
+      - "5432:5432"
+    volumes:
+      - bookwise-data:/var/lib/postgresql/data
+volumes:
+  bookwise-data:

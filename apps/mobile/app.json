@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "Bookwise", "slug": "bookwise", "version": "0.1.0", "orientation": "portrait",
+    "scheme": "bookwise", "userInterfaceStyle": "light",
+    "plugins": ["expo-router"],
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.bookwise.app" },
+    "android": { "package": "com.bookwise.app" }
+  }
+}
