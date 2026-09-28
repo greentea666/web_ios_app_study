@@ -18,13 +18,15 @@ Web 管理台已包含儀表板、預約、客戶、服務、報表與工作區�
 
 ## 目前商業化進度
 
-目前階段：**可部署的 MVP／公開測試準備中；本 repository 尚未替你建立第三方帳號或公開網址。**
+目前階段：**免費公開測試版已部署。**
 
-- 已完成：Web 管理介面、帳號註冊／登入、workspace 隔離、預約／客戶／服務／報表 CRUD、Prisma/PostgreSQL repository、初始 migration、Render 部署設定與本機 API 測試。
-- 尚未完成：第三方平台實際部署、公開網址、付款訂閱、郵件通知、正式資安與個資流程。
-- 搜尋狀態：目前沒有公開網址、sitemap 或搜尋引擎驗證，因此 Google／Bing 現在搜尋不到這個本機專案。Web 入口是登入／註冊工作台，不是公開產品介紹頁；即使部署並收錄，搜尋引擎也看不到登入後的儀表板資料。
+- Web 測試網址：[https://web-ios-app-study.t410002246.workers.dev](https://web-ios-app-study.t410002246.workers.dev)
+- API health：[https://bookwise-api-qmrr.onrender.com/health](https://bookwise-api-qmrr.onrender.com/health)，目前回應 `{"status":"ok","service":"bookwise-api"}`。
+- 已完成：Web 管理介面、帳號註冊／登入、workspace 隔離、預約／客戶／服務／報表 CRUD、Prisma/PostgreSQL repository、初始 migration、Render API 與 Cloudflare Worker 部署；API health 和前端 CORS preflight 均已驗證。
+- 尚未完成：端到端建立測試帳號及 CRUD 驗收、付款訂閱、郵件通知、正式資安與個資流程。
+- 搜尋狀態：網站已有公開網址，但尚未設定 sitemap 或搜尋引擎驗證。Web 入口是登入／註冊工作台，不是公開產品介紹頁；即使部署並收錄，搜尋引擎也看不到登入後的儀表板資料。
 
-**部署前準備：** 需由你登入 GitHub、Neon、Render 和 Cloudflare 完成連結及輸入各平台產生的資料庫連線字串；不要把 secrets 提供給聊天或提交到 Git。API production 會要求 `DATABASE_URL`、至少 32 個隨機字元的 `AUTH_SECRET` 及明確的 `CORS_ORIGIN`。Web 的 `VITE_API_URL` 必須設為公開 API 的 `/api` 根網址。
+**測試環境限制：** Render 免費服務閒置後會休眠，首次請求可能需等待喚醒。請只使用測試資料，不要輸入真實客戶個資。Neon 連線字串和 `AUTH_SECRET` 是 secrets，不要放進 Git 或聊天。
 
 ## 快速開始
 
@@ -130,10 +132,10 @@ docker-compose.yml            本機 PostgreSQL
 
 1. 將程式推到 GitHub，確認最新變更已在預設分支。
 2. 在 Neon 建立 PostgreSQL project，複製 pooled connection string 作為 `DATABASE_URL`、direct connection string 作為 `DIRECT_URL`。API runtime 使用 pooled URL，Render build 的 Prisma migration 使用 direct URL。把兩條 URL 都視為 secret。
-3. 在 Render 選 **New > Blueprint**，連結 repository 並套用根目錄的 `render.yaml`。在服務環境變數填入 `DATABASE_URL`、`DIRECT_URL`，將 `CORS_ORIGIN` 暫時設為 `https://web-ios-app-study.<你的帳號>.workers.dev`（以 Cloudflare 實際網址為準）；`AUTH_SECRET` 由 Blueprint 產生。Render build 會執行 Prisma generate、migration deploy 與 typecheck，start command 啟動 Fastify。
-4. 等 Render 部署完成，在服務 Settings 確認 health check path 是 `/health`，打開 `https://你的-api.onrender.com/health`，預期回傳 `{"status":"ok","service":"bookwise-api"}`。記下 API 網址。
-5. 在 Cloudflare Workers Builds 連結同一個 GitHub repository，建立 Worker `web-ios-app-study`。Root directory 設 `/`；Build command 設 `pnpm run build`；Deploy command 設 `npx wrangler deploy --config apps/web/wrangler.jsonc`。設定 Build variable `VITE_API_URL=https://你的-api.onrender.com/api` 後重新部署。Wrangler 設定會發布 `apps/web/dist`，並將未知路徑 fallback 到 SPA `index.html`。
-6. 回 Render 把 `CORS_ORIGIN` 更新為 Cloudflare 顯示的實際 `https://<worker>.<subdomain>.workers.dev` 網址並重新部署。確認 Web 與 API 均使用 HTTPS，API health check 正常。
+3. 在 Render 套用根目錄 `render.yaml`，設定 Neon pooled `DATABASE_URL`、direct `DIRECT_URL`、公開前端 `CORS_ORIGIN`，並由 Blueprint 產生 `AUTH_SECRET`。Build 會執行 Prisma generate、migration deploy 與 typecheck。
+4. 確認 Render Health Check Path 為 `/health`，測試 `https://bookwise-api-qmrr.onrender.com/health` 回傳 `{"status":"ok","service":"bookwise-api"}`。
+5. Cloudflare Workers Builds 使用 repository root `/`、Build command `pnpm run build`、Deploy command `npx wrangler deploy --config apps/web/wrangler.jsonc`。正式前端 API URL 設在 `apps/web/.env.production`；Wrangler 將 `apps/web/dist` 發布至 `workers.dev`，未知路徑 fallback 到 SPA `index.html`。
+6. 本專案目前公開網址為 `https://web-ios-app-study.t410002246.workers.dev`，API base URL 為 `https://bookwise-api-qmrr.onrender.com/api`。改網址時同步更新 `apps/web/.env.production` 與 Render `CORS_ORIGIN`，再重新部署兩端。
 
 如果平台無法辨識 Blueprint，可在 Render 手動建立 Web Service：Root Directory 留空、Build Command 使用 `pnpm install --frozen-lockfile --prod=false && pnpm --filter @bookwise/api db:generate && pnpm --filter @bookwise/api db:migrate && pnpm --filter @bookwise/api typecheck`、Start Command 使用 `pnpm --filter @bookwise/api start`，Health Check Path 設 `/health`，並照 Blueprint 設定 `NODE_ENV=production`、`AUTH_SECRET`、`DATABASE_URL`、`DIRECT_URL`、`CORS_ORIGIN`。第一次部署前必須先建立 Neon DB 並設定兩條 URL，migration 才能成功。
 
