@@ -111,35 +111,35 @@ docker-compose.yml            本機 PostgreSQL
 
 ## 免費公開部署與搜尋引擎
 
-免費方案適合展示與早期測試，平台配額、休眠政策及條款可能調整；正式商用前請重新確認各平台價格和限制。免費的 `*.pages.dev` 網址即可公開訪問，不一定要先買網域，但自訂網域通常需要付費購買。
+免費方案適合展示與早期測試，平台配額、休眠政策及條款可能調整；正式商用前請重新確認各平台價格和限制。Cloudflare Worker 提供免費 `*.workers.dev` 網址，不必購買自訂網域。
 
 ### 建議註冊的平台
 
 | 平台 | 用途 | 何時需要 |
 | --- | --- | --- |
 | [GitHub](https://github.com/) | 存放程式碼，讓部署平台從 repository 自動建置 | 部署前；若程式碼已在 GitHub 可略過 |
-| [Cloudflare](https://dash.cloudflare.com/) | Cloudflare Pages 免費託管 Vite Web，提供公開 `*.pages.dev` 網址 | 公開前端展示時 |
+| [Cloudflare](https://dash.cloudflare.com/) | Workers Builds 部署 Vite 靜態 assets，提供公開 `*.workers.dev` 網址 | 公開前端展示時 |
 | [Neon](https://neon.tech/) | PostgreSQL 資料庫；Render API 透過 `DATABASE_URL` 連線 | API 部署前 |
 | [Render](https://render.com/) | 依 repository 的 [render.yaml](render.yaml) 部署 Node.js API、執行 migration 並提供 `/health` | API 部署時 |
 | [Google Search Console](https://search.google.com/search-console/) | 驗證網站、檢查 Google 抓取狀態、提交 sitemap | 網站已經有公開 HTTPS 網址後 |
 | [Bing Webmaster Tools](https://www.bing.com/webmasters/) | 驗證網站並提交 Bing 索引；可選擇匯入 Search Console 網站 | 網站已經有公開 HTTPS 網址後 |
 
-以上服務都有免費入門選項，但不代表永久免費或沒有用量限制。Cloudflare Pages 只負責前端；Render 免費 API 可能休眠。不要把 `AUTH_SECRET`、資料庫連線字串或其他 secrets 放進前端環境變數或 Git。
+以上服務都有免費入門選項，但不代表永久免費或沒有用量限制。Cloudflare Worker 負責前端靜態檔；Render 免費 API 可能休眠。不要把 `AUTH_SECRET`、資料庫連線字串或其他 secrets 放進前端環境變數或 Git。
 
 ### 免費部署完整流程
 
 1. 將程式推到 GitHub，確認最新變更已在預設分支。
 2. 在 Neon 建立 PostgreSQL project，複製 pooled connection string 作為 `DATABASE_URL`、direct connection string 作為 `DIRECT_URL`。API runtime 使用 pooled URL，Render build 的 Prisma migration 使用 direct URL。把兩條 URL 都視為 secret。
-3. 在 Render 選 **New > Blueprint**，連結 repository 並套用根目錄的 `render.yaml`。在服務環境變數填入 `DATABASE_URL`、`DIRECT_URL`，將 `CORS_ORIGIN` 暫時設為 `https://你的專案.pages.dev`（Pages 網址建立後回來修正）；`AUTH_SECRET` 由 Blueprint 產生。Render build 會執行 Prisma generate、migration deploy 與 typecheck，start command 啟動 Fastify。
+3. 在 Render 選 **New > Blueprint**，連結 repository 並套用根目錄的 `render.yaml`。在服務環境變數填入 `DATABASE_URL`、`DIRECT_URL`，將 `CORS_ORIGIN` 暫時設為 `https://web-ios-app-study.<你的帳號>.workers.dev`（以 Cloudflare 實際網址為準）；`AUTH_SECRET` 由 Blueprint 產生。Render build 會執行 Prisma generate、migration deploy 與 typecheck，start command 啟動 Fastify。
 4. 等 Render 部署完成，在服務 Settings 確認 health check path 是 `/health`，打開 `https://你的-api.onrender.com/health`，預期回傳 `{"status":"ok","service":"bookwise-api"}`。記下 API 網址。
-5. 在 Cloudflare Pages 建立 application，連結同一個 GitHub repository。Root directory 留空；Build command 設為 `pnpm install --frozen-lockfile && pnpm --filter @bookwise/shared --filter @bookwise/web build`；Build output directory 設為 `apps/web/dist`。加入環境變數 `VITE_API_URL=https://你的-api.onrender.com/api`，部署 Production。
-6. 回 Render 把 `CORS_ORIGIN` 更新為實際 `https://你的專案.pages.dev` 網址並重新部署。確認 Web 與 API 均使用 HTTPS，API health check 正常。
+5. 在 Cloudflare Workers Builds 連結同一個 GitHub repository，建立 Worker `web-ios-app-study`。Root directory 設 `/`；Build command 設 `pnpm run build`；Deploy command 設 `npx wrangler deploy --config apps/web/wrangler.jsonc`。設定 Build variable `VITE_API_URL=https://你的-api.onrender.com/api` 後重新部署。Wrangler 設定會發布 `apps/web/dist`，並將未知路徑 fallback 到 SPA `index.html`。
+6. 回 Render 把 `CORS_ORIGIN` 更新為 Cloudflare 顯示的實際 `https://<worker>.<subdomain>.workers.dev` 網址並重新部署。確認 Web 與 API 均使用 HTTPS，API health check 正常。
 
 如果平台無法辨識 Blueprint，可在 Render 手動建立 Web Service：Root Directory 留空、Build Command 使用 `pnpm install --frozen-lockfile --prod=false && pnpm --filter @bookwise/api db:generate && pnpm --filter @bookwise/api db:migrate && pnpm --filter @bookwise/api typecheck`、Start Command 使用 `pnpm --filter @bookwise/api start`，Health Check Path 設 `/health`，並照 Blueprint 設定 `NODE_ENV=production`、`AUTH_SECRET`、`DATABASE_URL`、`DIRECT_URL`、`CORS_ORIGIN`。第一次部署前必須先建立 Neon DB 並設定兩條 URL，migration 才能成功。
 
 ### 公開網站線上驗收
 
-使用無痕視窗打開 Cloudflare Pages 網址：
+使用無痕視窗打開 Cloudflare `workers.dev` 網址：
 
 1. 建立一個專用測試帳號（密碼至少 12 字元），登入後確認工作區名稱正確。
 2. 在「服務項目」新增測試服務，例如「線上測試諮詢」，設定時長與價格。
