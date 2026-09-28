@@ -1,6 +1,162 @@
-generator client { provider = "prisma-client-js" }
-datasource db { provider = "postgresql" url = env("DATABASE_URL") }
-model Workspace { id String @id @default(cuid()) name String users User[] appointments Appointment[] createdAt DateTime @default(now()) }
-model User { id String @id @default(cuid()) email String @unique name String workspaceId String workspace Workspace @relation(fields: [workspaceId], references: [id]) createdAt DateTime @default(now()) }
-model Appointment { id String @id @default(cuid()) customerName String service String startsAt DateTime durationMinutes Int status AppointmentStatus @default(PENDING) workspaceId String workspace Workspace @relation(fields: [workspaceId], references: [id]) createdAt DateTime @default(now()) updatedAt DateTime @updatedAt @@index([workspaceId, startsAt]) }
-enum AppointmentStatus { CONFIRMED PENDING CANCELLED }
+generator client {
+	provider = "prisma-client-js"
+}
+
+datasource db {
+	provider = "postgresql"
+	url      = env("DATABASE_URL")
+}
+
+model Workspace {
+	id             String         @id @default(cuid())
+	slug           String         @unique
+	name           String
+	timezone       String         @default("Asia/Taipei")
+	currency       String         @default("TWD")
+	locale         String         @default("zh-TW")
+	brandColor     String         @default("#197d68")
+	features       Json           @default("{}")
+	memberships    Membership[]
+	customers      Customer[]
+	services       Service[]
+	appointments   Appointment[]
+	subscription   Subscription?
+	auditLogs      AuditLog[]
+	createdAt      DateTime       @default(now())
+	updatedAt      DateTime       @updatedAt
+}
+
+model User {
+	id           String       @id @default(cuid())
+	email        String       @unique
+	name         String
+	passwordHash String
+	memberships  Membership[]
+	auditLogs    AuditLog[]
+	createdAt    DateTime     @default(now())
+	updatedAt    DateTime     @updatedAt
+}
+
+model Membership {
+	id          String         @id @default(cuid())
+	userId      String
+	workspaceId String
+	role        WorkspaceRole  @default(MEMBER)
+	user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+	workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+	createdAt   DateTime       @default(now())
+
+	@@unique([userId, workspaceId])
+	@@index([workspaceId, role])
+}
+
+model Customer {
+	id            String        @id @default(cuid())
+	workspaceId   String
+	name          String
+	email         String        @default("")
+	phone         String        @default("")
+	notes         String        @default("")
+	tags          String[]      @default([])
+	workspace     Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+	appointments  Appointment[]
+	createdAt     DateTime      @default(now())
+	updatedAt     DateTime      @updatedAt
+
+	@@index([workspaceId, name])
+	@@index([workspaceId, email])
+}
+
+model Service {
+	id              String        @id @default(cuid())
+	workspaceId     String
+	name            String
+	description     String        @default("")
+	durationMinutes Int
+	price           Decimal       @db.Decimal(12, 2)
+	currency        String        @default("TWD")
+	active          Boolean       @default(true)
+	color           String        @default("#27856f")
+	workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+	appointments    Appointment[]
+	createdAt       DateTime      @default(now())
+	updatedAt       DateTime      @updatedAt
+
+	@@index([workspaceId, active, name])
+}
+
+model Appointment {
+	id              String              @id @default(cuid())
+	workspaceId     String
+	customerId      String?
+	serviceId       String?
+	customerName    String
+	serviceName     String
+	startsAt        DateTime
+	durationMinutes Int
+	price           Decimal             @default(0) @db.Decimal(12, 2)
+	status          AppointmentStatus   @default(PENDING)
+	notes           String              @default("")
+	workspace       Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+	customer        Customer?           @relation(fields: [customerId], references: [id], onDelete: SetNull)
+	serviceRecord   Service?            @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+	createdAt       DateTime            @default(now())
+	updatedAt       DateTime            @updatedAt
+
+	@@index([workspaceId, startsAt])
+	@@index([workspaceId, status, startsAt])
+	@@index([customerId])
+}
+
+model Subscription {
+	id                   String             @id @default(cuid())
+	workspaceId          String             @unique
+	provider             String             @default("stripe")
+	providerCustomerId   String?            @unique
+	providerSubscriptionId String?           @unique
+	planKey              String             @default("free")
+	status               SubscriptionStatus @default(TRIALING)
+	currentPeriodEnd     DateTime?
+	cancelAtPeriodEnd    Boolean            @default(false)
+	workspace            Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+	createdAt            DateTime           @default(now())
+	updatedAt            DateTime           @updatedAt
+}
+
+model AuditLog {
+	id          String      @id @default(cuid())
+	workspaceId String
+	actorId     String?
+	action      String
+	entity      String
+	entityId    String?
+	metadata    Json        @default("{}")
+	workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+	actor       User?       @relation(fields: [actorId], references: [id], onDelete: SetNull)
+	createdAt   DateTime    @default(now())
+
+	@@index([workspaceId, createdAt])
+	@@index([actorId, createdAt])
+}
+
+enum WorkspaceRole {
+	OWNER
+	ADMIN
+	MEMBER
+	VIEWER
+}
+
+enum AppointmentStatus {
+	CONFIRMED
+	PENDING
+	CANCELLED
+	COMPLETED
+}
+
+enum SubscriptionStatus {
+	TRIALING
+	ACTIVE
+	PAST_DUE
+	CANCELLED
+	INCOMPLETE
+}

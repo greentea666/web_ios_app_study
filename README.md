@@ -12,7 +12,9 @@ packages/shared  共用資料型別與輸入 schema
 prisma/       PostgreSQL 多租戶資料模型
 ```
 
-目前 API 預設使用記憶體資料，讓新環境可以立即展示；`prisma/schema.prisma` 已定義 Workspace、User、Appointment，下一步可將 repository 接到 PostgreSQL。重啟 API 會重置示範資料。
+Web 管理台已包含儀表板、預約、客戶、服務、報表與工作區品牌／功能模組設定。API 已加入帳號註冊／登入、簽章 bearer token、密碼雜湊、使用者 workspace scope 和基本唯讀角色限制；本機將帳號與商業資料分別原子寫入 `.data/accounts.json` 和 `.data/bookwise.json`，API 重啟後仍可保留。`prisma/schema.prisma` 是後續 PostgreSQL 整合的資料模型草案。
+
+> **部署限制：** 目前是單機 MVP／展示基底，不是可直接承載正式客戶資料的 SaaS。API 刻意拒絕在 production 使用 JSON repository；正式上線前仍須實作 PostgreSQL repository、migration/transaction/備份、團隊邀請與完整 membership/RBAC、登入限流的跨程序儲存、密碼重設／session 管理、稽核與個資政策；訂閱金流、郵件和推播也尚未串接。註冊使用者的 token 會綁定自己的 workspace；只有非 production 的範例登入可切換展示 workspace。不要將此版本直接公開部署或放入真實個資。
 
 ## 快速開始
 
@@ -28,7 +30,7 @@ Web：`http://localhost:5173`
 API：`http://localhost:4000`  
 API health：`http://localhost:4000/health`
 
-PostgreSQL 開發服務：
+本機商業資料儲存在 `.data/bookwise.json`、帳號雜湊資料儲存在 `.data/accounts.json`；可在 `.env` 設定 `BOOKWISE_DATA_FILE`、`BOOKWISE_AUTH_FILE` 改變位置。API 可從 workspace 根目錄或 `apps/api` 載入 `.env`。若要啟動既有 PostgreSQL 容器（目前 API 尚未連接該服務）：
 
 ```bash
 docker compose up -d postgres
@@ -57,21 +59,29 @@ pnpm test
 | Method | Route | 用途 |
 | --- | --- | --- |
 | GET | `/health` | 服務健康檢查 |
+| POST | `/api/v1/auth/register` | 註冊帳號並建立獨立工作區 |
+| POST | `/api/v1/auth/login` | 驗證帳號密碼並取得 bearer token |
+| POST | `/api/v1/auth/demo` | 本機展示登入（production 關閉） |
+| POST | `/api/v1/auth/password` | 變更密碼並撤銷舊 token |
 | GET | `/api/v1/dashboard` | 工作區儀表板 |
-| GET | `/api/v1/appointments` | 預約列表 |
-| POST | `/api/v1/appointments` | 建立預約，使用 Zod 驗證 |
-| PATCH | `/api/v1/appointments/:id` | 切換預約狀態 |
-| DELETE | `/api/v1/appointments/:id` | 刪除預約 |
+| GET / POST | `/api/v1/appointments` | 搜尋／新增預約，驗證資料並檢查時段衝突 |
+| PATCH / DELETE | `/api/v1/appointments/:id` | 更新／刪除預約 |
+| GET / POST | `/api/v1/customers` | 搜尋／新增客戶 |
+| PATCH / DELETE | `/api/v1/customers/:id` | 更新／刪除客戶；有預約的客戶禁止刪除 |
+| GET / POST | `/api/v1/services` | 查詢／新增服務 |
+| PATCH / DELETE | `/api/v1/services/:id` | 編輯、啟停或刪除服務 |
+| GET | `/api/v1/reports` | 預約與營收彙總，可用 `from`／`to` 篩選 |
+| GET / PATCH | `/api/v1/workspace` | 工作區名稱、幣別、時區、品牌色與功能開關 |
 
-所有商業資料應帶 `workspaceId`，正式環境再加入 JWT／session middleware、RBAC、rate limit、audit log 與 payment webhook。
+登入後的商業 API 需要 `Authorization: Bearer <token>`；正式帳號的 workspace 由簽章 token 決定，忽略任意 workspace header。僅本機 demo token 可搭配 `x-workspace-id` 切換範例工作區，不能用來隔離真實租戶。
 
 ## 商業化演進順序
 
-1. 將 API 的記憶體陣列替換為 Prisma repository，加入 migration、seed 與 transaction。
-2. 加入登入、邀請團隊、角色權限與每個 request 的 workspace scope。
+1. 把本機 JSON repository 換成 PostgreSQL/Prisma，加入 migration、seed、transaction、備份與 restore 測試。
+2. 加入安全登入、邀請團隊、workspace membership、RBAC 與所有請求的 tenant 授權。
 3. 加入 Stripe 訂閱、方案限制、email／推播提醒與 webhook idempotency。
-4. 補上 API integration tests、Web E2E、Mobile release channel、CI/CD 與錯誤監控。
-5. 將檔案、通知與背景工作拆到 object storage、queue worker；保留現有 API contract。
+4. 補上稽核記錄、rate limit、個資刪除/匯出、API integration tests、Web E2E、CI/CD 與監控。
+5. 將檔案、通知與背景工作拆到 object storage、queue worker；保持既有 API contract。
 
 ## 目錄
 
