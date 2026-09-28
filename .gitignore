@@ -7,3 +7,4 @@ dist
 coverage
 *.log
 .data
+/apps/api/generated/client

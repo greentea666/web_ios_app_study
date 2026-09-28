@@ -8,9 +8,16 @@
     "dev:web": "pnpm --filter @bookwise/web dev",
     "dev:api": "pnpm --filter @bookwise/api dev",
     "test": "pnpm --filter @bookwise/api test",
+    "db:generate": "pnpm --filter @bookwise/api db:generate",
+    "db:migrate": "pnpm --filter @bookwise/api db:migrate",
     "build": "pnpm --filter @bookwise/shared --filter @bookwise/api --filter @bookwise/web build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@prisma/client": "^6"
+  }
 }

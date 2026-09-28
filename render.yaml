@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: bookwise-api
+    runtime: node
+    plan: free
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @bookwise/api db:generate && pnpm --filter @bookwise/api db:migrate && pnpm --filter @bookwise/api typecheck
+    startCommand: pnpm --filter @bookwise/api start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false

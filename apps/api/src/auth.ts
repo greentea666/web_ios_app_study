@@ -14,6 +14,12 @@ export const loginSchema = z.object({ email: z.string().trim().email().max(254).
 type Role = "OWNER" | "ADMIN" | "MEMBER" | "VIEWER" | "DEMO";
 type Account = { id: string; name: string; email: string; passwordHash: string; tokenVersion?: number; workspaceId: string; role: Exclude<Role, "DEMO"> };
 export type Claims = { sub: string; name: string; email: string; workspaceId: string; role: Role; exp: number; ver?: number };
+export interface AccountStore {
+  create(account: Account): Promise<boolean>;
+  findByEmail(email: string): Promise<Account | undefined>;
+  findById(id: string): Promise<Account | undefined>;
+  updatePassword(id: string, passwordHash: string, tokenVersion: number): Promise<boolean>;
+}
 
 type AccountFile = { users: Account[] };
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -23,12 +29,14 @@ export class AuthService {
   private readonly users: Account[] = [];
   private readonly filePath?: string;
   private readonly secret: string;
+  private readonly store?: AccountStore;
 
-  constructor() {
+  constructor(store?: AccountStore) {
+    this.store = store;
     const configuredSecret = process.env.AUTH_SECRET;
     if (process.env.NODE_ENV === "production" && (!configuredSecret || configuredSecret.length < 32)) throw new Error("AUTH_SECRET must be configured with at least 32 random characters in production.");
     this.secret = configuredSecret ?? "bookwise-local-development-only-not-for-production";
-    this.filePath = process.env.NODE_ENV === "test" ? undefined : process.env.BOOKWISE_AUTH_FILE;
+    this.filePath = store || process.env.NODE_ENV === "test" ? undefined : process.env.BOOKWISE_AUTH_FILE;
     if (this.filePath) {
       try {
         const data = JSON.parse(readFileSync(this.filePath, "utf8")) as AccountFile;
@@ -41,28 +49,33 @@ export class AuthService {
   }
 
   async register(input: z.infer<typeof registerSchema>) {
-    if (this.users.some((user) => user.email === input.email)) return undefined;
+    if (!this.store && this.users.some((user) => user.email === input.email)) return undefined;
     const workspaceId = `ws_${randomUUID().replaceAll("-", "")}`;
     const user: Account = {
       id: `usr_${randomUUID()}`, name: input.name, email: input.email,
       passwordHash: this.hash(input.password), workspaceId, role: "OWNER",
     };
-    this.users.push(user);
-    this.persist();
+    if (this.store) {
+      if (!await this.store.create(user)) return undefined;
+    } else {
+      this.users.push(user);
+      this.persist();
+    }
     return { token: this.sign(user), user: this.publicUser(user), workspaceId };
   }
 
   async login(input: z.infer<typeof loginSchema>) {
-    const user = this.users.find((item) => item.email === input.email);
+    const user = this.store ? await this.store.findByEmail(input.email) : this.users.find((item) => item.email === input.email);
     if (!user || !this.verifyPassword(input.password, user.passwordHash)) return undefined;
     return { token: this.sign(user), user: this.publicUser(user), workspaceId: user.workspaceId };
   }
 
-  changePassword(userId: string, currentPassword: string, newPassword: string) {
-    const user = this.users.find((item) => item.id === userId);
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = this.store ? await this.store.findById(userId) : this.users.find((item) => item.id === userId);
     if (!user || !this.verifyPassword(currentPassword, user.passwordHash)) return false;
     user.passwordHash = this.hash(newPassword);
     user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+    if (this.store) return this.store.updatePassword(userId, user.passwordHash, user.tokenVersion);
     this.persist();
     return true;
   }
@@ -72,7 +85,7 @@ export class AuthService {
     return { token: this.encodeToken(claims), user: { id: claims.sub, name: claims.name, email: claims.email, role: claims.role }, workspaceId: claims.workspaceId };
   }
 
-  verifyToken(token: string): Claims | undefined {
+  async verifyToken(token: string): Promise<Claims | undefined> {
     const [payload, signature, extra] = token.split(".");
     if (!payload || !signature || extra) return undefined;
     const expected = createHmac("sha256", this.secret).update(payload).digest();
@@ -83,7 +96,7 @@ export class AuthService {
       const claims = decode<Claims>(payload);
       if (!claims.sub || !claims.workspaceId || !claims.exp || claims.exp <= Math.floor(Date.now() / 1000)) return undefined;
       if (claims.role !== "DEMO") {
-        const user = this.users.find((item) => item.id === claims.sub);
+        const user = this.store ? await this.store.findById(claims.sub) : this.users.find((item) => item.id === claims.sub);
         if (!user || (claims.exp <= Math.floor(Date.now() / 1000)) || claims.role !== user.role || !claims.email) return undefined;
         const versionMatch = this.tokenVersionFromPayload(payload);
         if (versionMatch !== (user.tokenVersion ?? 0)) return undefined;

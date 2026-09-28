@@ -12,6 +12,8 @@ import {
   type Appointment, type Customer, type Dashboard, type Service, type Workspace,
 } from "@bookwise/shared";
 import { z } from "zod";
+import { PrismaClient } from "../generated/client/index.js";
+import { PrismaAccountStore, PrismaBookingRepository } from "./prisma-repository.js";
 
 const envFile = [resolve(process.cwd(), ".env"), resolve(process.cwd(), "../../.env")].find(existsSync);
 if (envFile) loadEnvFile(envFile);
@@ -54,21 +56,22 @@ export const defaultWorkspace: Workspace = {
 };
 
 /** Repository boundary keeps API contracts independent from memory, SQL, or other storage providers. */
+type MaybePromise<T> = T | Promise<T>;
 export interface BookingRepository {
-  appointments(workspaceId: string): Appointment[];
-  customers(workspaceId: string): Customer[];
-  services(workspaceId: string): Service[];
-  workspace(workspaceId: string): Workspace;
-  putAppointment(workspaceId: string, value: Appointment): void;
-  putCustomer(workspaceId: string, value: Customer): void;
-  putService(workspaceId: string, value: Service): void;
-  putWorkspace(value: Workspace): void;
-  updateAppointment(workspaceId: string, id: string, changes: Partial<Appointment>): Appointment | undefined;
-  updateCustomer(workspaceId: string, id: string, changes: Partial<Customer>): Customer | undefined;
-  updateService(workspaceId: string, id: string, changes: Partial<Service>): Service | undefined;
-  deleteAppointment(workspaceId: string, id: string): boolean;
-  deleteCustomer(workspaceId: string, id: string): boolean;
-  deleteService(workspaceId: string, id: string): boolean;
+  appointments(workspaceId: string): MaybePromise<Appointment[]>;
+  customers(workspaceId: string): MaybePromise<Customer[]>;
+  services(workspaceId: string): MaybePromise<Service[]>;
+  workspace(workspaceId: string): MaybePromise<Workspace>;
+  putAppointment(workspaceId: string, value: Appointment): MaybePromise<void>;
+  putCustomer(workspaceId: string, value: Customer): MaybePromise<void>;
+  putService(workspaceId: string, value: Service): MaybePromise<void>;
+  putWorkspace(value: Workspace): MaybePromise<void>;
+  updateAppointment(workspaceId: string, id: string, changes: Partial<Appointment>): MaybePromise<Appointment | undefined>;
+  updateCustomer(workspaceId: string, id: string, changes: Partial<Customer>): MaybePromise<Customer | undefined>;
+  updateService(workspaceId: string, id: string, changes: Partial<Service>): MaybePromise<Service | undefined>;
+  deleteAppointment(workspaceId: string, id: string): MaybePromise<boolean>;
+  deleteCustomer(workspaceId: string, id: string): MaybePromise<boolean>;
+  deleteService(workspaceId: string, id: string): MaybePromise<boolean>;
 }
 
 export class MemoryBookingRepository implements BookingRepository {
@@ -144,12 +147,12 @@ export class MemoryBookingRepository implements BookingRepository {
 const invalid = (reply: FastifyReply, details: unknown) => reply.code(400).send({ error: "INVALID_INPUT", details });
 const notFound = (reply: FastifyReply) => reply.code(404).send({ error: "NOT_FOUND" });
 
-export function buildApp(initialAppointments: Appointment[] = seedAppointments, repository: BookingRepository = new MemoryBookingRepository(initialAppointments)) {
+export function buildApp(initialAppointments: Appointment[] = seedAppointments, repository: BookingRepository = new MemoryBookingRepository(initialAppointments), accountStore?: ConstructorParameters<typeof AuthService>[0]) {
   if (process.env.NODE_ENV === "production" && repository instanceof MemoryBookingRepository) throw new Error("The JSON repository is for local development only. Configure a durable production repository before deployment.");
   if (process.env.NODE_ENV === "production" && !process.env.CORS_ORIGIN) throw new Error("CORS_ORIGIN must be configured explicitly in production.");
   const app = Fastify({ logger: process.env.NODE_ENV !== "test" });
   let auth: AuthService;
-  try { auth = new AuthService(); } catch (error) {
+  try { auth = new AuthService(accountStore); } catch (error) {
     app.log.error(error, "Authentication configuration is invalid.");
     throw error;
   }
@@ -179,7 +182,7 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
     }
     const authorization = request.headers.authorization;
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
-    const claims = auth.verifyToken(token);
+    const claims = await auth.verifyToken(token);
     if (!claims) return reply.code(401).send({ error: "UNAUTHENTICATED", message: "請先登入或重新登入。" });
     claimsByRequest.set(request, claims);
     if (claims.role !== "DEMO" && request.headers["x-workspace-id"] && request.headers["x-workspace-id"] !== claims.workspaceId) {
@@ -211,24 +214,24 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
     const account = await auth.register(parsed.data);
     if (!account) return reply.code(409).send({ error: "EMAIL_ALREADY_REGISTERED", message: "此 Email 已經註冊。" });
-    repository.putWorkspace({ ...structuredClone(defaultWorkspace), id: account.workspaceId, name: parsed.data.workspaceName });
-    return reply.code(201).send(apiResponse({ ...account, workspace: repository.workspace(account.workspaceId) }));
+    await repository.putWorkspace({ ...structuredClone(defaultWorkspace), id: account.workspaceId, name: parsed.data.workspaceName });
+    return reply.code(201).send(apiResponse({ ...account, workspace: await repository.workspace(account.workspaceId) }));
   });
   app.post("/api/v1/auth/login", async (request, reply) => {
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
     const session = await auth.login(parsed.data);
     if (!session) return reply.code(401).send({ error: "INVALID_CREDENTIALS", message: "Email 或密碼不正確。" });
-    return apiResponse({ ...session, workspace: repository.workspace(session.workspaceId) });
+    return apiResponse({ ...session, workspace: await repository.workspace(session.workspaceId) });
   });
   app.post("/api/v1/auth/password", async (request, reply) => {
     const authorization = request.headers.authorization;
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
-    const claims = auth.verifyToken(token);
+    const claims = await auth.verifyToken(token);
     if (!claims || claims.role === "DEMO") return reply.code(401).send({ error: "UNAUTHENTICATED", message: "請先以正式帳號登入。" });
     const parsed = z.object({ currentPassword: z.string().min(1).max(200), newPassword: z.string().min(12).max(200) }).safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
-    if (!auth.changePassword(claims.sub, parsed.data.currentPassword, parsed.data.newPassword)) return reply.code(400).send({ error: "INVALID_PASSWORD", message: "目前密碼不正確。" });
+    if (!await auth.changePassword(claims.sub, parsed.data.currentPassword, parsed.data.newPassword)) return reply.code(400).send({ error: "INVALID_PASSWORD", message: "目前密碼不正確。" });
     return apiResponse({ changed: true, reauthenticate: true });
   });
   app.post("/api/v1/auth/demo", async (request, reply) => {
@@ -236,33 +239,34 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
     return apiResponse(auth.demoSession());
   });
 
-  app.get("/api/v1/workspace", async (request) => apiResponse(repository.workspace(workspaceIdFrom(request, claimsByRequest))));
+  app.get("/api/v1/workspace", async (request) => apiResponse(await repository.workspace(workspaceIdFrom(request, claimsByRequest))));
   app.patch("/api/v1/workspace", async (request, reply) => {
     const parsed = updateWorkspaceSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
-    const current = repository.workspace(workspaceIdFrom(request, claimsByRequest));
+    const current = await repository.workspace(workspaceIdFrom(request, claimsByRequest));
     const updated = { ...current, ...parsed.data, features: { ...current.features, ...parsed.data.features } };
-    repository.putWorkspace(updated);
+    await repository.putWorkspace(updated);
     return apiResponse(updated);
   });
 
   app.get("/api/v1/dashboard", async (request): Promise<{ data: Dashboard; meta: { version: string } }> => {
     const workspaceId = workspaceIdFrom(request, claimsByRequest);
-    const appointments = repository.appointments(workspaceId);
     const now = new Date();
-    const timeZone = repository.workspace(workspaceId).timezone;
+    const workspace = await repository.workspace(workspaceId);
+    const appointments = await repository.appointments(workspaceId);
+    const timeZone = workspace.timezone;
     const today = dayKey(now, timeZone);
     const month = today.slice(0, 7);
     const currentMonthAppointments = appointments.filter((appointment) => dayKey(new Date(appointment.startsAt), timeZone).slice(0, 7) === month && appointment.status !== "cancelled");
     const data: Dashboard = {
-      businessName: repository.workspace(workspaceId).name,
+      businessName: workspace.name,
       todayAppointments: appointments.filter((appointment) => dayKey(new Date(appointment.startsAt), timeZone) === today && appointment.status !== "cancelled").length,
       monthlyRevenue: currentMonthAppointments.filter((appointment) => ["confirmed", "completed"].includes(appointment.status)).reduce((sum, appointment) => sum + appointment.price, 0),
       occupancyRate: Math.min(100, Math.round((currentMonthAppointments.length / 40) * 100)),
       appointments: appointments.filter((appointment) => dayKey(new Date(appointment.startsAt), timeZone) === today).sort((a, b) => a.startsAt.localeCompare(b.startsAt)),
       pendingAppointments: appointments.filter((appointment) => appointment.status === "pending").length,
-      customerCount: repository.customers(workspaceId).length,
-      activeServiceCount: repository.services(workspaceId).filter((service) => service.active).length,
+      customerCount: (await repository.customers(workspaceId)).length,
+      activeServiceCount: (await repository.services(workspaceId)).filter((service) => service.active).length,
     };
     return apiResponse(data);
   });
@@ -270,7 +274,7 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
   app.get("/api/v1/appointments", async (request) => {
     const query = request.query as { q?: string; status?: string; from?: string; to?: string };
     const q = query.q?.toLocaleLowerCase("zh-TW");
-    const appointments = repository.appointments(workspaceIdFrom(request, claimsByRequest)).filter((item) =>
+    const appointments = (await repository.appointments(workspaceIdFrom(request, claimsByRequest))).filter((item) =>
       (!q || `${item.customerName} ${item.service} ${item.notes}`.toLocaleLowerCase("zh-TW").includes(q)) &&
       (!query.status || item.status === query.status) && (!query.from || item.startsAt >= query.from) && (!query.to || item.startsAt <= query.to),
     ).sort((a, b) => a.startsAt.localeCompare(b.startsAt));
@@ -280,17 +284,17 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
     const parsed = createAppointmentSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
     const workspaceId = workspaceIdFrom(request, claimsByRequest);
-    if (parsed.data.customerId && !repository.customers(workspaceId).some((customer) => customer.id === parsed.data.customerId)) return reply.code(422).send({ error: "INVALID_CUSTOMER", message: "所選客戶不存在於此工作區。" });
+    if (parsed.data.customerId && !(await repository.customers(workspaceId)).some((customer) => customer.id === parsed.data.customerId)) return reply.code(422).send({ error: "INVALID_CUSTOMER", message: "所選客戶不存在於此工作區。" });
     if (parsed.data.serviceId) {
-      const selectedService = repository.services(workspaceId).find((service) => service.id === parsed.data.serviceId);
+      const selectedService = (await repository.services(workspaceId)).find((service) => service.id === parsed.data.serviceId);
       if (!selectedService || !selectedService.active) return reply.code(422).send({ error: "INVALID_SERVICE", message: "此服務不存在或已停用。" });
     }
     const start = new Date(parsed.data.startsAt).getTime();
     const end = start + parsed.data.durationMinutes * 60_000;
-    const collision = repository.appointments(workspaceId).some((item) => item.status !== "cancelled" && start < new Date(item.startsAt).getTime() + item.durationMinutes * 60_000 && end > new Date(item.startsAt).getTime());
+    const collision = (await repository.appointments(workspaceId)).some((item) => item.status !== "cancelled" && start < new Date(item.startsAt).getTime() + item.durationMinutes * 60_000 && end > new Date(item.startsAt).getTime());
     if (collision) return reply.code(409).send({ error: "TIME_SLOT_UNAVAILABLE", message: "此時段已有其他預約，請選擇其他時間。" });
     const value: Appointment = { id: `apt_${randomUUID()}`, ...parsed.data, createdAt: new Date().toISOString() };
-    repository.putAppointment(workspaceId, value);
+    await repository.putAppointment(workspaceId, value);
     return reply.code(201).send(apiResponse(value));
   });
   app.patch("/api/v1/appointments/:id", async (request, reply) => {
@@ -298,86 +302,86 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
     const workspaceId = workspaceIdFrom(request, claimsByRequest);
     const id = (request.params as { id: string }).id;
-    const current = repository.appointments(workspaceId).find((item) => item.id === id);
+    const current = (await repository.appointments(workspaceId)).find((item) => item.id === id);
     if (!current) return notFound(reply);
-    if (parsed.data.customerId && !repository.customers(workspaceId).some((customer) => customer.id === parsed.data.customerId)) return reply.code(422).send({ error: "INVALID_CUSTOMER", message: "所選客戶不存在於此工作區。" });
+    if (parsed.data.customerId && !(await repository.customers(workspaceId)).some((customer) => customer.id === parsed.data.customerId)) return reply.code(422).send({ error: "INVALID_CUSTOMER", message: "所選客戶不存在於此工作區。" });
     if (parsed.data.serviceId) {
-      const selectedService = repository.services(workspaceId).find((service) => service.id === parsed.data.serviceId);
+      const selectedService = (await repository.services(workspaceId)).find((service) => service.id === parsed.data.serviceId);
       if (!selectedService || (!selectedService.active && current.serviceId !== selectedService.id)) return reply.code(422).send({ error: "INVALID_SERVICE", message: "此服務不存在或已停用。" });
     }
     if (parsed.data.status !== "cancelled") {
       const start = new Date(parsed.data.startsAt ?? current.startsAt).getTime();
       const duration = parsed.data.durationMinutes ?? current.durationMinutes;
       const end = start + duration * 60_000;
-      const collision = repository.appointments(workspaceId).some((item) => item.id !== id && item.status !== "cancelled" && start < new Date(item.startsAt).getTime() + item.durationMinutes * 60_000 && end > new Date(item.startsAt).getTime());
+      const collision = (await repository.appointments(workspaceId)).some((item) => item.id !== id && item.status !== "cancelled" && start < new Date(item.startsAt).getTime() + item.durationMinutes * 60_000 && end > new Date(item.startsAt).getTime());
       if (collision) return reply.code(409).send({ error: "TIME_SLOT_UNAVAILABLE", message: "此時段已有其他預約，請選擇其他時間。" });
     }
-    const updated = repository.updateAppointment(workspaceId, id, parsed.data);
+    const updated = await repository.updateAppointment(workspaceId, id, parsed.data);
     if (!updated) return notFound(reply);
     return apiResponse(updated);
   });
   app.delete("/api/v1/appointments/:id", async (request, reply) => {
-    if (!repository.deleteAppointment(workspaceIdFrom(request, claimsByRequest), (request.params as { id: string }).id)) return notFound(reply);
+    if (!await repository.deleteAppointment(workspaceIdFrom(request, claimsByRequest), (request.params as { id: string }).id)) return notFound(reply);
     return reply.code(204).send();
   });
 
   app.get("/api/v1/customers", async (request) => {
     const q = ((request.query as { q?: string }).q ?? "").toLocaleLowerCase("zh-TW");
-    return apiResponse(repository.customers(workspaceIdFrom(request, claimsByRequest)).filter((item) => !q || `${item.name} ${item.email} ${item.phone} ${item.tags.join(" ")}`.toLocaleLowerCase("zh-TW").includes(q)));
+    return apiResponse((await repository.customers(workspaceIdFrom(request, claimsByRequest))).filter((item) => !q || `${item.name} ${item.email} ${item.phone} ${item.tags.join(" ")}`.toLocaleLowerCase("zh-TW").includes(q)));
   });
   app.post("/api/v1/customers", async (request, reply) => {
     const parsed = createCustomerSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
     const value: Customer = { id: `cus_${randomUUID()}`, ...parsed.data, createdAt: new Date().toISOString() };
-    repository.putCustomer(workspaceIdFrom(request, claimsByRequest), value);
+    await repository.putCustomer(workspaceIdFrom(request, claimsByRequest), value);
     return reply.code(201).send(apiResponse(value));
   });
   app.patch("/api/v1/customers/:id", async (request, reply) => {
     const parsed = updateCustomerSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
-    const updated = repository.updateCustomer(workspaceIdFrom(request, claimsByRequest), (request.params as { id: string }).id, parsed.data);
+    const updated = await repository.updateCustomer(workspaceIdFrom(request, claimsByRequest), (request.params as { id: string }).id, parsed.data);
     if (!updated) return notFound(reply);
     return apiResponse(updated);
   });
   app.delete("/api/v1/customers/:id", async (request, reply) => {
     const workspaceId = workspaceIdFrom(request, claimsByRequest);
     const id = (request.params as { id: string }).id;
-    if (repository.appointments(workspaceId).some((appointment) => appointment.customerId === id)) return reply.code(409).send({ error: "CUSTOMER_HAS_APPOINTMENTS", message: "客戶仍有預約紀錄；請封存客戶而非刪除。" });
-    if (!repository.deleteCustomer(workspaceId, id)) return notFound(reply);
+    if ((await repository.appointments(workspaceId)).some((appointment) => appointment.customerId === id)) return reply.code(409).send({ error: "CUSTOMER_HAS_APPOINTMENTS", message: "客戶仍有預約紀錄；請封存客戶而非刪除。" });
+    if (!await repository.deleteCustomer(workspaceId, id)) return notFound(reply);
     return reply.code(204).send();
   });
 
   app.get("/api/v1/services", async (request) => {
     const includeInactive = (request.query as { includeInactive?: string }).includeInactive === "true";
-    return apiResponse(repository.services(workspaceIdFrom(request, claimsByRequest)).filter((item) => includeInactive || item.active));
+    return apiResponse((await repository.services(workspaceIdFrom(request, claimsByRequest))).filter((item) => includeInactive || item.active));
   });
   app.post("/api/v1/services", async (request, reply) => {
     const parsed = createServiceSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
     const value: Service = { id: `svc_${randomUUID()}`, ...parsed.data };
-    repository.putService(workspaceIdFrom(request, claimsByRequest), value);
+    await repository.putService(workspaceIdFrom(request, claimsByRequest), value);
     return reply.code(201).send(apiResponse(value));
   });
   app.patch("/api/v1/services/:id", async (request, reply) => {
     const parsed = updateServiceSchema.safeParse(request.body);
     if (!parsed.success) return invalid(reply, parsed.error.flatten());
-    const updated = repository.updateService(workspaceIdFrom(request, claimsByRequest), (request.params as { id: string }).id, parsed.data);
+    const updated = await repository.updateService(workspaceIdFrom(request, claimsByRequest), (request.params as { id: string }).id, parsed.data);
     if (!updated) return notFound(reply);
     return apiResponse(updated);
   });
   app.delete("/api/v1/services/:id", async (request, reply) => {
     const workspaceId = workspaceIdFrom(request, claimsByRequest);
     const id = (request.params as { id: string }).id;
-    if (repository.appointments(workspaceId).some((appointment) => appointment.serviceId === id)) return reply.code(409).send({ error: "SERVICE_HAS_APPOINTMENTS", message: "此服務已被預約使用；請停用而非刪除。" });
-    if (!repository.deleteService(workspaceId, id)) return notFound(reply);
+    if ((await repository.appointments(workspaceId)).some((appointment) => appointment.serviceId === id)) return reply.code(409).send({ error: "SERVICE_HAS_APPOINTMENTS", message: "此服務已被預約使用；請停用而非刪除。" });
+    if (!await repository.deleteService(workspaceId, id)) return notFound(reply);
     return reply.code(204).send();
   });
 
   app.get("/api/v1/reports", async (request) => {
     const { from, to } = request.query as { from?: string; to?: string };
     const workspaceId = workspaceIdFrom(request, claimsByRequest);
-    const timeZone = repository.workspace(workspaceId).timezone;
-    const appointments = repository.appointments(workspaceId).filter((item) => item.status !== "cancelled" && (!from || item.startsAt >= from) && (!to || item.startsAt <= to));
+    const timeZone = (await repository.workspace(workspaceId)).timezone;
+    const appointments = (await repository.appointments(workspaceId)).filter((item) => item.status !== "cancelled" && (!from || item.startsAt >= from) && (!to || item.startsAt <= to));
     const revenue = appointments.filter((item) => ["confirmed", "completed"].includes(item.status)).reduce((sum, item) => sum + item.price, 0);
     const byService = Object.values(appointments.reduce<Record<string, { service: string; count: number; revenue: number }>>((groups, item) => {
       const group = groups[item.service] ??= { service: item.service, count: 0, revenue: 0 };
@@ -399,7 +403,16 @@ export function buildApp(initialAppointments: Appointment[] = seedAppointments, 
 }
 
 if (process.env.NODE_ENV !== "test") {
-  const app = buildApp();
-  const port = Number(process.env.API_PORT ?? 4000);
-  app.listen({ port, host: "0.0.0.0" }).catch((error) => { app.log.error(error); process.exit(1); });
+  const start = async () => {
+    if (process.env.NODE_ENV === "production" && !process.env.DATABASE_URL) throw new Error("DATABASE_URL must be configured in production.");
+    const prisma = process.env.DATABASE_URL ? new PrismaClient() : undefined;
+    if (prisma) await prisma.$connect();
+    const repository = prisma ? new PrismaBookingRepository(prisma) : new MemoryBookingRepository();
+    const accountStore = prisma ? new PrismaAccountStore(prisma) : undefined;
+    const app = buildApp(seedAppointments, repository, accountStore);
+    if (prisma) app.addHook("onClose", () => prisma.$disconnect());
+    const port = Number(process.env.PORT ?? process.env.API_PORT ?? 4000);
+    await app.listen({ port, host: "0.0.0.0" });
+  };
+  start().catch((error) => { console.error(error); process.exit(1); });
 }
